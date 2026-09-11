@@ -57,7 +57,7 @@ async def ciclo_de_vida(app: FastAPI):
 
 app = FastAPI(
     title="Calculadora API",
-    description="API didactica de 4 operaciones. Historial opcional en Postgres.",
+    description="API didactica de 5 operaciones. Historial opcional en Postgres.",
     version="3.0.0",
     lifespan=ciclo_de_vida,
 )
@@ -199,11 +199,11 @@ app.add_middleware(
 # rechaza solo todo lo que no encaje, con un 422 y un mensaje explicando que
 # campo esta mal.
 
-Operacion = Literal["suma", "resta", "multiplicacion", "division"]
+Operacion = Literal["suma", "resta", "multiplicacion", "division", "potencia"]
 
 # Tabla unica: cada operacion sabe su simbolo y como se calcula.
 # Un solo lugar para agregar una operacion nueva -> un solo lugar donde
-# equivocarse. Si manana querés potencia, agregas UNA linea aca.
+# equivocarse. Si manana queres una operacion mas, agregas UNA linea aca.
 # El tipo de cada lambda es Callable[[float, float], float]: "funcion que toma
 # dos floats y devuelve un float". OJO: `callable` en minuscula es OTRA cosa —
 # es la funcion built-in que pregunta si algo se puede llamar. Usarla como
@@ -214,6 +214,7 @@ OPERACIONES: dict[str, tuple[str, Callable[[float, float], float]]] = {
     "resta": ("-", lambda a, b: a - b),
     "multiplicacion": ("*", lambda a, b: a * b),
     "division": ("/", lambda a, b: a / b),
+    "potencia": ("**", lambda a, b: a ** b),
 }
 
 
@@ -304,7 +305,7 @@ def calcular(datos: OperacionRequest) -> OperacionResponse:
     Recibe dos numeros y una operacion, devuelve el resultado.
 
     Cuando esta funcion arranca, `datos` YA esta validado: a y b son floats de
-    verdad y operacion es una de las cuatro permitidas. Por eso el cuerpo puede
+    verdad y operacion es una de las cinco permitidas. Por eso el cuerpo puede
     ser tan corto — el trabajo sucio lo hizo Pydantic antes de llegar aca.
     """
     simbolo, calcular_fn = OPERACIONES[datos.operacion]
@@ -316,7 +317,23 @@ def calcular(datos: OperacionRequest) -> OperacionResponse:
         # No es un 500: el servidor esta perfecto, el pedido es el invalido.
         raise HTTPException(status_code=400, detail="No se puede dividir por cero.")
 
-    resultado = calcular_fn(datos.a, datos.b)
+    try:
+        resultado = calcular_fn(datos.a, datos.b)
+    except OverflowError:
+        # Regla de negocio 2 (potencia): un resultado que desborda no siempre
+        # llega como inf. 10 ** 400 directamente revienta con OverflowError.
+        # Es el MISMO caso que el `math.isfinite` de abajo — un resultado que
+        # no entra en un float — asi que lo convertimos a inf y dejamos que la
+        # regla siguiente lo maneje, con su mismo mensaje y su mismo 400.
+        resultado = float("inf")
+    except ZeroDivisionError:
+        # Regla de negocio 3 (potencia): 0 elevado a un exponente negativo es
+        # 1 / 0^b — una division por cero enmascarada. Mismo espiritu que la
+        # regla de division: el pedido es el invalido, es un 400.
+        raise HTTPException(
+            status_code=400,
+            detail="No se puede elevar cero a un exponente negativo.",
+        )
 
     # Regla de negocio 2: el resultado tiene que entrar en un float.
     # Los dos operandos pueden ser finitos y perfectamente validos, y aun asi
@@ -328,6 +345,19 @@ def calcular(datos: OperacionRequest) -> OperacionResponse:
     #   ValueError: Out of range float values are not JSON compliant: inf
     # y la API contesta 500 — o sea, "yo me rompi" por un dato que mando el
     # cliente. Es mentira y confunde a quien debuggea. Es un 400.
+    if not isinstance(resultado, float):
+        # Regla de negocio 4 (potencia): base negativa con exponente
+        # fraccionario da un numero COMPLEJO: (-8) ** 0.5. La respuesta de
+        # esta API esta tipada como float, JSON no tiene complejos, y una
+        # calculadora de numeros reales no tiene por que devolverlos.
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "La operacion no tiene resultado real: base negativa elevada "
+                "a un exponente fraccionario da un numero complejo."
+            ),
+        )
+
     if not math.isfinite(resultado):
         raise HTTPException(
             status_code=400,

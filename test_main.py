@@ -19,7 +19,7 @@ client = TestClient(app)
 
 
 # ---------------------------------------------------------------------------
-# Camino feliz: las cuatro operaciones
+# Camino feliz: las cinco operaciones
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize(
@@ -33,6 +33,10 @@ client = TestClient(app)
         ("multiplicacion", 3, 0, 0),
         ("division", 10, 4, 2.5),
         ("division", -9, 3, -3),
+        ("potencia", 2, 3, 8),
+        ("potencia", 5, 0, 1),
+        ("potencia", 9, 0.5, 3.0),
+        ("potencia", -2, 3, -8),
     ],
 )
 def test_calcula_correctamente(operacion, a, b, esperado):
@@ -50,6 +54,15 @@ def test_la_respuesta_incluye_la_expresion_legible():
     assert cuerpo["simbolo"] == "/"
 
 
+def test_la_respuesta_de_potencia_incluye_la_expresion_legible():
+    respuesta = client.post("/api/calcular", json={"a": 2, "b": 5, "operacion": "potencia"})
+
+    cuerpo = respuesta.json()
+    assert cuerpo["simbolo"] == "**"
+    assert cuerpo["expresion"] == "2.0 ** 5.0 = 32.0"
+    assert cuerpo["operacion"] == "potencia"
+
+
 # ---------------------------------------------------------------------------
 # Casos borde: aca es donde se separa el codigo serio del codigo de juguete
 # ---------------------------------------------------------------------------
@@ -61,9 +74,27 @@ def test_division_por_cero_devuelve_400_y_no_revienta():
     assert "cero" in respuesta.json()["detail"].lower()
 
 
+def test_cero_elevado_a_exponente_negativo_devuelve_400():
+    # 0 ** -1 es 1 / 0 — una division por cero enmascarada. Es un 400, no un
+    # 500: el servidor esta perfecto, el pedido es el invalido.
+    respuesta = client.post("/api/calcular", json={"a": 0, "b": -1, "operacion": "potencia"})
+
+    assert respuesta.status_code == 400
+    assert "cero" in respuesta.json()["detail"].lower()
+
+
+def test_base_negativa_con_exponente_fraccionario_devuelve_400():
+    # (-8) ** 0.5 da un numero COMPLEJO. Esta API es de numeros reales, la
+    # respuesta esta tipada como float y JSON no tiene complejos: es un 400.
+    respuesta = client.post("/api/calcular", json={"a": -8, "b": 0.5, "operacion": "potencia"})
+
+    assert respuesta.status_code == 400
+    assert "real" in respuesta.json()["detail"].lower()
+
+
 def test_operacion_desconocida_devuelve_422():
     # 422 lo genera Pydantic solo, porque el campo esta tipado como Literal.
-    respuesta = client.post("/api/calcular", json={"a": 1, "b": 2, "operacion": "potencia"})
+    respuesta = client.post("/api/calcular", json={"a": 1, "b": 2, "operacion": "raiz"})
 
     assert respuesta.status_code == 422
 
@@ -88,6 +119,8 @@ def test_valor_no_numerico_devuelve_422():
         (1e308, 10, "multiplicacion"),      # overflow hacia +infinito
         (-1e308, 10, "multiplicacion"),     # overflow hacia -infinito
         (1, 5e-324, "division"),            # dividir por algo diminuto tambien desborda
+        (10, 400, "potencia"),              # 10^400 desborda el float de 64 bits
+        (100, 200, "potencia"),             # 100^200 desborda el float de 64 bits
     ],
 )
 def test_resultado_fuera_de_rango_devuelve_400_no_500(a, b, operacion):
